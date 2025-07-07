@@ -261,7 +261,7 @@ class WaylandPanelManager {
 
   showPanel() {
     PanelBox$1.translation_y = -PanelBox$1.height;
-    PanelBox$1.opacity = 255
+    PanelBox$1.visible = true
     PanelBox$1.ease({
       translation_y: 0,
       duration: 250,
@@ -278,7 +278,7 @@ class WaylandPanelManager {
       duration: 250,
       mode: Clutter.AnimationMode.EASE_IN_QUAD,
       onComplete: () => {
-        PanelBox$1.opacity = 0
+        PanelBox$1.visible = false
         PanelBox$1.translation_y = 0;
       }
     })
