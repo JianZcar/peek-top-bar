@@ -1,409 +1,320 @@
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as Layout from 'resource:///org/gnome/shell/ui/layout.js';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
+import { PopupMenu } from 'resource:///org/gnome/shell/ui/popupMenu.js';
+import Shell from 'gi://Shell';
 import Meta from 'gi://Meta';
 import Clutter from 'gi://Clutter';
 import GObject from 'gi://GObject';
-import Shell from 'gi://Shell';
-import * as Layout from 'resource:///org/gnome/shell/ui/layout.js';
 import Glib from 'gi://GLib';
+import St from 'gi://St';
 
-function __decorate(decorators, target, key, desc) {
-  var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
-  if (typeof Reflect === "object" && typeof Reflect.decorate === "function") r = Reflect.decorate(decorators, target, key, desc);
-  else for (var i = decorators.length - 1; i >= 0; i--) if (d = decorators[i]) r = (c < 3 ? d(r) : c > 3 ? d(target, key, r) : d(target, key)) || r;
+const PRESSURE_THRESHOLD = 150;
+const PRESSURE_TIMEOUT = 1000;
+const EDGE_WIDTH_PERCENT = 1.0;
+const LOG_PREFIX = '[PeekHotEdge]';
 
-  return c > 3 && r && Object.defineProperty(target, key, r), r;
-}
+const PeekHotEdge = GObject.registerClass(
+class PeekHotEdge extends Clutter.Actor {
+  _init(monitor, triggerAction, leaveAction) {
+    const width = monitor.width * EDGE_WIDTH_PERCENT;
+    const xOffset = monitor.x + (monitor.width - width) / 2;
 
-// @ts-nocheck
-/// Taken from https://github.com/material-shell/material-shell/blob/main/src/utils/gjs.ts
-/// Decorator function to call `GObject.registerClass` with the given class.
-/// Use like
-/// ```
-/// @registerGObjectClass
-/// export class MyThing extends GObject.Object { ... }
-/// ```
-function registerGObjectClass(target) {
-  // Note that we use 'hasOwnProperty' because otherwise we would get inherited meta infos.
-  // This would be bad because we would inherit the GObjectName too, which is supposed to be unique.
-  if (Object.prototype.hasOwnProperty.call(target, "metaInfo")) {
-    // eslint-disable-next-line
-    // @ts-ignore
-    // eslint-disable-next-line
-    return GObject.registerClass(target.metaInfo, target);
-  }
-  else {
-    // eslint-disable-next-line
-    // @ts-ignore
-    return GObject.registerClass(target);
-  }
-}
+    super._init({
+      name: 'peek-hot-edge',
+      reactive: true,
+      x: xOffset,
+      y: monitor.y,
+      width: width,
+      height: 1,
+    });
 
-class Barrier {
-  constructor(position, hitDirection, triggerMode, triggerAction) {
-    this.position = position;
-    this.hitDirection = hitDirection;
-    this.triggerMode = triggerMode;
-    this.triggerAction = triggerAction;
+    this._monitor = monitor;
+    this._triggerAction = triggerAction;
+    this._leaveAction = leaveAction;
+    this._isActive = false;
+    this._panelLeaveHandlerId = null;
+    this._barrier = null;
+    this._pressureBarrier = null;
+
+    this._setupPressureBarrier();
+    Main.layoutManager.addChrome(this);
   }
 
-  activate() {
-    this.pressureBarrier = new Layout.PressureBarrier(this.triggerMode === TriggerMode.Delayed ? 15 : 0, this.triggerMode === TriggerMode.Delayed ? 200 : 0, Shell.ActionMode.NORMAL);
-    this.pressureBarrier.connect("trigger", this.onTrigger.bind(this));
-    const { x1, x2, y1, y2 } = this.position;
-    this.nativeBarrier = new Meta.Barrier({
+  _setupPressureBarrier() {
+    if ((global.backend.capabilities & Meta.BackendCapabilities.BARRIERS) === 0) {
+      log(LOG_PREFIX + ' No barrier support. Using fallback hover mode.');
+      this.connect('enter-event', this._onEnterFallback.bind(this));
+      this.connect('leave-event', this._onLeaveFallback.bind(this));
+      return;
+    }
+
+    log(LOG_PREFIX + ' Using pressure barrier.');
+
+    this._pressureBarrier = new Layout.PressureBarrier(
+      PRESSURE_THRESHOLD,
+      PRESSURE_TIMEOUT,
+      Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW
+    );
+
+    const width = this.width;
+    const x1 = this.x;
+    const x2 = this.x + width;
+    const y = this.y;
+
+    this._barrier = new Meta.Barrier({
+      x1: x1, x2: x2,
+      y1: y, y2: y,
+      directions: Meta.BarrierDirection.POSITIVE_Y,
       backend: global.backend,
-      x1,
-      x2,
-      y1,
-      y2,
-      directions: this.hitDirection === HitDirection.FromBottom
-        ? Meta.BarrierDirection.POSITIVE_Y
-        : Meta.BarrierDirection.NEGATIVE_Y,
     });
-    this.pressureBarrier.addBarrier(this.nativeBarrier);
+
+    this._pressureBarrier.addBarrier(this._barrier);
+    this._pressureBarrier.connect('trigger', this._onPressureTrigger.bind(this));
   }
 
-  onTrigger() {
-    this.triggerAction();
-  }
+  _onPressureTrigger() {
+    if (!this._isActive) {
+      this._isActive = true;
+      this._triggerAction();
 
-  dispose() {
-    if (!this.nativeBarrier) {
-      return;
-    }
-    this.pressureBarrier?.removeBarrier(this.nativeBarrier);
-    this.nativeBarrier.destroy();
-    this.nativeBarrier = null;
-    this.pressureBarrier?.destroy();
-    this.pressureBarrier = null;
-  }
-}
-var HitDirection;
-(function(HitDirection) {
-  HitDirection[HitDirection["FromTop"] = 0] = "FromTop";
-  HitDirection[HitDirection["FromBottom"] = 1] = "FromBottom";
-})(HitDirection || (HitDirection = {}));
-var TriggerMode;
-(function(TriggerMode) {
-  TriggerMode[TriggerMode["Instant"] = 0] = "Instant";
-  TriggerMode[TriggerMode["Delayed"] = 1] = "Delayed";
-})(TriggerMode || (TriggerMode = {}));
-
-class CursorPositionLeaveDetector {
-  constructor(position, hitDirection, leaveAction, leaveCondition) {
-    this.position = position;
-    this.leaveAction = leaveAction;
-    this.leaveCondition = leaveCondition;
-    this.timeoutId = null;
-    this.boundsChecker =
-      hitDirection === HitDirection.FromBottom
-        ? this.fromBottomBoundsChecker
-        : this.fromTopBoundsChecker;
-  }
-
-  activate() {
-    this.timeoutId = Glib.timeout_add(Glib.PRIORITY_DEFAULT, 400, () => {
-      if (!this.isOutOfBounds() || !this.leaveCondition?.()) {
-        return Glib.SOURCE_CONTINUE;
+      if (!this._panelLeaveHandlerId) {
+        this._panelLeaveHandlerId = Main.panel.connect('leave-event', this._onPanelLeave.bind(this));
       }
-      this.leaveAction();
-
-      return Glib.SOURCE_REMOVE;
-    });
-  }
-
-  dispose() {
-    if (this.timeoutId) {
-      Glib.source_remove(this.timeoutId);
-      this.timeoutId = null;
     }
   }
 
-  isOutOfBounds() {
-    let [_, mouse_y, __] = global.get_pointer();
+  _onPanelLeave() {
+    const [px, py] = global.get_pointer();
+    const actorNow = global.stage.get_actor_at_pos(Clutter.PickMode.REACTIVE, px, py);
+    const isStillOver = Main.panel.contains(actorNow) || this.contains(actorNow);
 
-    return this.boundsChecker(mouse_y);
-  }
-
-  fromTopBoundsChecker(mouseY) {
-    return this.position.y1 < mouseY;
-  }
-
-  fromBottomBoundsChecker(mouseY) {
-    return this.position.y1 > mouseY;
-  }
-}
-
-/**
- * Edge detection, hardcoded for top edge, since
- * I don't need anything else at the moment
- */
-let HotEdge = class HotEdge extends Clutter.Actor {
-  constructor(monitor, leaveOffset, triggerAction, leaveAction, leaveCondition) {
-    super();
-    this.monitor = monitor;
-    this.leaveOffset = leaveOffset;
-    this.triggerAction = triggerAction;
-    this.leaveAction = leaveAction;
-    this.leaveCondition = leaveCondition;
-    this.barrier = null;
-    this.leaveDetector = null;
-    this._isTriggered = false;
-    this.connect("destroy", this.dispose.bind(this));
-  }
-
-  initialize() {
-    const { x, y, width } = this.monitor;
-    this.barrier = new Barrier({
-      x1: x,
-      x2: x + width,
-      y1: y + 1,
-      y2: y + 1,
-    }, HitDirection.FromBottom, TriggerMode.Delayed, this.onEnter.bind(this));
-    this.barrier.activate();
-  }
-
-  onEnter() {
-    if (this._isTriggered) {
-      return;
+    if (!isStillOver && this._isActive && !isAnyPanelMenuOpen()) {
+      this._deactivate();
     }
-    this._isTriggered = true;
-    const { x, y, width } = this.monitor;
-    this.leaveDetector = new CursorPositionLeaveDetector({
-      x1: x,
-      x2: x + width,
-      y1: y + this.leaveOffset,
-      y2: y + this.leaveOffset,
-    }, HitDirection.FromTop, this.onLeave.bind(this), this.leaveCondition);
-    this.leaveDetector.activate();
-    this.triggerAction();
   }
 
-  onLeave() {
-    if (!this._isTriggered) {
-      return;
+  _onEnterFallback() {
+    this._onPressureTrigger();
+  }
+
+  _onLeaveFallback() {
+    this._onPanelLeave();
+  }
+
+  _deactivate() {
+    this._isActive = false;
+    this._leaveAction();
+
+    if (this._panelLeaveHandlerId) {
+      Main.panel.disconnect(this._panelLeaveHandlerId);
+      this._panelLeaveHandlerId = null;
     }
-    this._isTriggered = false;
-    this.disposeOfLeaveDetector();
-    this.leaveAction();
   }
 
-  dispose() {
-    this.barrier?.dispose();
-    this.barrier = null;
-    this.disposeOfLeaveDetector();
-  }
+  destroy() {
+    if (this._panelLeaveHandlerId)
+      Main.panel.disconnect(this._panelLeaveHandlerId);
 
-  disposeOfLeaveDetector() {
-    this.leaveDetector?.dispose();
-    this.leaveDetector = null;
-  }
-};
-HotEdge = __decorate([
-  registerGObjectClass
-], HotEdge);
-
-function isFullscreen(monitor) {
-  return monitor.inFullscreen;
-}
-
-function isInOverview() {
-  const layoutManager = Main.layoutManager;
-
-  return layoutManager._inOverview;
-}
-
-let timeoutSourceIds = [];
-function delay(milliseconds) {
-  return new Promise((resolve) => {
-    const timeoutId = Glib.timeout_add(Glib.PRIORITY_DEFAULT, milliseconds, () => {
-      removeFinishedTimeoutId(timeoutId);
-      resolve(undefined);
-
-      return Glib.SOURCE_REMOVE;
-    });
-    if (!timeoutSourceIds) {
-      timeoutSourceIds = [];
+    if (this._barrier && this._pressureBarrier) {
+      this._pressureBarrier.removeBarrier(this._barrier);
+      this._barrier.destroy();
+      this._barrier = null;
     }
-    timeoutSourceIds.push(timeoutId);
-  });
+
+    if (this._pressureBarrier) {
+      this._pressureBarrier.destroy();
+      this._pressureBarrier = null;
+    }
+
+    Main.layoutManager.removeChrome(this);
+    super.destroy();
+  }
 }
 
-function removeFinishedTimeoutId(timeoutId) {
-  timeoutSourceIds?.splice(timeoutSourceIds.indexOf(timeoutId), 1);
-}
+);
 
-function disposeDelayTimeouts() {
-  timeoutSourceIds?.forEach((sourceId) => {
-    Glib.Source.remove(sourceId);
-  });
-  timeoutSourceIds = null;
-}
-
-const PanelBox$1 = Main.layoutManager.panelBox;
-
-/**
- * On Wayland, making the panel visible is not enough,
- * there is some weird issue that causes the panel to stay invisible,
- * even though it becomes clickable. As a workaround, on Wayland a concealed dumb
- * app with invisible window (always on top) is started. That makes the panel visible.
- */
 class WaylandPanelManager {
-  constructor(extensionPath) {
-    this.extensionPath = extensionPath;
+  constructor() {
+    this._dummyButton = null;
+    this._dummyMenu = null;
+    this._createInvisibleMenu();
   }
 
-  static createAndInitialize(extensionPath) {
-    const manager = new WaylandPanelManager(extensionPath);
-    return manager;
+  static createAndInitialize() {
+    return new WaylandPanelManager();
+  }
+
+  _createInvisibleMenu() {
+    this._dummyButton = new St.Bin({ reactive: false, visible: false });
+    Main.panel._rightBox.insert_child_at_index(this._dummyButton, 0);
+
+    this._dummyMenu = new PopupMenu(this._dummyButton, 0.5, St.Side.TOP);
+    this._dummyMenu.actor.set_position(0, -100);
+    Main.uiGroup.add_child(this._dummyMenu.actor);
+  }
+
+  _openInvisibleMenu() {
+    if (this._dummyMenu && !this._dummyMenu.isOpen)
+      this._dummyMenu.open();
+  }
+
+  _closeInvisibleMenu() {
+    if (this._dummyMenu && this._dummyMenu.isOpen)
+      this._dummyMenu.close();
   }
 
   showPanel() {
-    PanelBox$1.translation_y = -PanelBox$1.height;
-    PanelBox$1.visible = true
-    PanelBox$1.ease({
+    this._openInvisibleMenu();
+    const panel = Main.layoutManager.panelBox;
+
+    panel.translation_y = -panel.height;
+    panel.visible = true;
+    panel.ease({
       translation_y: 0,
       duration: 250,
       mode: Clutter.AnimationMode.EASE_OUT_QUAD,
       onComplete: () => {
-        PanelBox$1.translation_y = 0;
+        panel.translation_y = 0;
       }
     });
   }
 
   hidePanel() {
-    PanelBox$1.ease({
-      translation_y: -PanelBox.height,
+    const panel = Main.layoutManager.panelBox;
+    panel.ease({
+      translation_y: -panel.height,
       duration: 250,
       mode: Clutter.AnimationMode.EASE_IN_QUAD,
       onComplete: () => {
-        PanelBox$1.visible = false
-        PanelBox$1.translation_y = 0;
-      }
-    })
-  }
-}
+        if (!Main.layoutManager.primaryMonitor.inFullscreen) {
+          panel.ease({
+            translation_y: 0,
+            duration: 100,
+            mode: Clutter.AnimationMode.EASE_IN_QUAD,
+            onComplete: () => panel.translation_y = 0
+          });
+          return;
+        }
 
-const PanelBox = Main.layoutManager.panelBox;
-
-class X11PanelManager {
-  showPanel() {
-    PanelBox.translation_y = -PanelBox$1.height;
-    PanelBox.visible = true;
-    PanelBox.ease({
-      translation_y: 0,
-      duration: 250,
-      mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-      onComplete: () => {
-        PanelBox.visible = true;
-        PanelBox.translation_y = 0;
+        panel.visible = false;
+        panel.translation_y = 0;
+        this._closeInvisibleMenu();
       }
     });
   }
 
-  hidePanel() {
-    PanelBox.ease({
-      translation_y: -PanelBox.height,
-      duration: 250,
-      mode: Clutter.AnimationMode.EASE_IN_QUAD,
-      onComplete: () => {
-        PanelBox.visible = false;
-        PanelBox.translation_y = 0;
-      }
-    })
+  dispose() {
+    this._closeInvisibleMenu();
+    if (this._dummyMenu) this._dummyMenu.destroy();
+    if (this._dummyButton) Main.panel._rightBox.remove_child(this._dummyButton);
+    Main.layoutManager.panelBox.visible = true;
+    Main.layoutManager.panelBox.translation_y = 0;
   }
-
-  dispose() { }
-}
-
-function getPanelHeight() {
-  return Main.layoutManager.panelBox.get_children()[0].height;
 }
 
 function isAnyPanelMenuOpen() {
   const statusArea = Main.layoutManager.panelBox.get_children()[0].statusArea;
-  const opennableIndicators = Object.keys(statusArea)
-    .filter((indicator) => !!statusArea[indicator].menu)
-    .map((indicator) => statusArea[indicator]);
-
-  return (opennableIndicators.filter((indicator) => indicator.menu.isOpen).length > 0);
+  return Object.values(statusArea).some(indicator => indicator.menu?.isOpen);
 }
 
 function toggleAnyIndicator() {
   const statusArea = Main.layoutManager.panelBox.get_children()[0].statusArea;
-  const opennableIndicators = Object.keys(statusArea)
-    .filter((indicator) => !!statusArea[indicator].menu)
-    .map((indicator) => statusArea[indicator]);
-  const closedIndicators = opennableIndicators.filter((indicator) => !indicator.menu.isOpen);
-  if (closedIndicators.length < 1) {
-    return;
+  const closed = Object.values(statusArea).filter(ind => ind.menu && !ind.menu.isOpen);
+  if (closed.length > 0) {
+    closed[0].menu.toggle();
+    closed[0].menu.toggle();
   }
-  closedIndicators[0].menu.toggle();
-  closedIndicators[0].menu.toggle();
 }
 
-class PeekTopBarOnFullscreenExtension extends Extension {
+function delay(ms) {
+  return new Promise(resolve => {
+    Glib.timeout_add(Glib.PRIORITY_DEFAULT, ms, () => {
+      resolve();
+      return Glib.SOURCE_REMOVE;
+    });
+  });
+}
+
+class PeekTopBarExtension extends Extension {
   constructor() {
     super(...arguments);
     this.hotEdge = null;
     this.hotCornersSub = null;
     this.panelManager = null;
+    this._menuSignals = [];
   }
 
   enable() {
-    console.log(`Enabling extension ${this.uuid}`);
-    if (Meta.is_wayland_compositor()) {
-      this.panelManager = WaylandPanelManager.createAndInitialize(this.path);
-    }
-    else {
-      this.panelManager = new X11PanelManager();
-    }
-    const layoutManager = Main.layoutManager;
-    this.hotCornersSub = layoutManager.connect("hot-corners-changed", () => {
-      this.setupHotEdge();
-    });
+    this.panelManager = WaylandPanelManager.createAndInitialize();
+
+    this.hotCornersSub = Main.layoutManager.connect("hot-corners-changed", () => this.setupHotEdge());
     this.setupHotEdge();
+
+    const statusArea = Main.layoutManager.panelBox.get_children()[0].statusArea;
+    const indicators = Object.values(statusArea).filter(i => i.menu);
+
+    for (const indicator of indicators) {
+      const id = indicator.menu.connect('open-state-changed', () => {
+        Glib.idle_add(Glib.PRIORITY_DEFAULT_IDLE, () => {
+          if (!isAnyPanelMenuOpen() && !Main.panel.contains(global.stage.get_actor_at_pos(Clutter.PickMode.REACTIVE, ...global.get_pointer()))) {
+            this.hotEdge?._deactivate();
+          }
+          return Glib.SOURCE_REMOVE;
+        });
+      });
+      this._menuSignals.push({ indicator, id });
+    }
   }
 
   setupHotEdge() {
-    this.hotEdge?.dispose();
-    const primaryMonitor = Main.layoutManager.primaryMonitor;
-    this.hotEdge = new HotEdge(primaryMonitor, getPanelHeight(), () => {
-      if (!isFullscreen(primaryMonitor)) {
-        return;
-      }
-      this.panelManager?.showPanel();
-    }, () => {
-      if (!isFullscreen(primaryMonitor) || isInOverview()) {
-        toggleAnyIndicator();
+    this.hotEdge?.destroy();
 
-        return;
-      }
-      delay(200).then(() => {
-        if (!isFullscreen(primaryMonitor) || isInOverview()) {
+    const monitor = Main.layoutManager.primaryMonitor;
+    this.hotEdge = new PeekHotEdge(
+      monitor,
+      () => {
+        if (monitor.inFullscreen)
+          this.panelManager.showPanel();
+      },
+      () => {
+        if (!monitor.inFullscreen || Main.layoutManager._inOverview) {
           toggleAnyIndicator();
-
           return;
         }
-        this.panelManager?.hidePanel();
-      });
-    }, () => !isAnyPanelMenuOpen() || isInOverview());
-    this.hotEdge.initialize();
+
+        delay(200).then(() => {
+          if (!monitor.inFullscreen || Main.layoutManager._inOverview) {
+            toggleAnyIndicator();
+          } else {
+            this.panelManager.hidePanel();
+          }
+        });
+      }
+    );
+
     Main.layoutManager.hotCorners.push(this.hotEdge);
   }
 
   disable() {
-    console.log(`Disabling extension ${this.uuid}`);
-    this.hotEdge?.dispose();
+    this.hotEdge?.destroy();
     this.hotEdge = null;
-    Main.layoutManager.disconnect(this.hotCornersSub);
-    this.hotCornersSub = null;
+
+    if (this.hotCornersSub) {
+      Main.layoutManager.disconnect(this.hotCornersSub);
+      this.hotCornersSub = null;
+    }
+
     this.panelManager?.dispose();
     this.panelManager = null;
-    disposeDelayTimeouts();
+
+    for (const { indicator, id } of this._menuSignals) {
+      indicator.menu.disconnect(id);
+    }
+    this._menuSignals = [];
+
     Main.layoutManager._updateHotCorners();
   }
 }
 
-export { PeekTopBarOnFullscreenExtension as default };
+export default PeekTopBarExtension;
